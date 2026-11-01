@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Helio Console</title>
+  <meta name="description" content="Ask the Helio knowledge base and see every citation, retrieval score and cost behind the answer.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Helio</span>
+      <span class="brand-sub">grounded answers with receipts</span>
+    </div>
+    <helio-status aria-live="polite"></helio-status>
+  </header>
+
+  <main id="main" class="layout">
+    <section class="col col-ask" aria-labelledby="ask-heading">
+      <h1 id="ask-heading" class="visually-hidden">Ask the knowledge base</h1>
+      <helio-ask></helio-ask>
+      <helio-answer></helio-answer>
+    </section>
+    <aside class="col col-side">
+      <helio-documents></helio-documents>
+      <helio-ingest></helio-ingest>
+      <helio-queries></helio-queries>
+    </aside>
+  </main>
+
+  <footer class="footer">
+    <span>Helio.NET</span>
+    <span aria-hidden="true">&middot;</span>
+    <a href="/health/ready">Readiness</a>
+  </footer>
+
+  <script type="module" src="components/api.js"></script>
+  <script type="module" src="components/helio-status.js"></script>
+  <script type="module" src="components/helio-ask.js"></script>
+  <script type="module" src="components/helio-answer.js"></script>
+  <script type="module" src="components/helio-documents.js"></script>
+  <script type="module" src="components/helio-ingest.js"></script>
+  <script type="module" src="components/helio-queries.js"></script>
+</body>
+</html>

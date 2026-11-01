@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/evals/">
+    <Project Path="evals/Helio.Evaluation/Helio.Evaluation.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Helio.Api/Helio.Api.csproj" />
+    <Project Path="src/Helio.Application/Helio.Application.csproj" />
+    <Project Path="src/Helio.Domain/Helio.Domain.csproj" />
+    <Project Path="src/Helio.Infrastructure/Helio.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Helio.IntegrationTests/Helio.IntegrationTests.csproj" />
+    <Project Path="tests/Helio.UnitTests/Helio.UnitTests.csproj" />
+  </Folder>
+</Solution>

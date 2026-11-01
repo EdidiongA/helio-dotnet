@@ -1,0 +1,128 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *" # nightly live evaluation against Azure OpenAI (skipped when secrets are absent)
+
+# Least privilege by default; jobs that need more declare it themselves.
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  build-test-evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore (NuGet audit fails the build on known vulnerabilities)
+        run: dotnet restore
+      - name: Vulnerable packages, including transitive (explicit, so the result is visible in the log)
+        run: dotnet list package --vulnerable --include-transitive 2>&1 | tee artifacts-vuln.txt && ! grep -q "has the following vulnerable packages" artifacts-vuln.txt
+      - name: Build (warnings are errors)
+        run: dotnet build --no-restore -c Release
+      - name: Unit tests
+        run: dotnet test tests/Helio.UnitTests --no-build -c Release --collect:"XPlat Code Coverage" --results-directory artifacts/unit
+      - name: Integration tests
+        run: dotnet test tests/Helio.IntegrationTests --no-build -c Release --results-directory artifacts/integration
+      - name: Evaluation quality gate (offline, deterministic provider, zero model spend)
+        run: dotnet run --project evals/Helio.Evaluation --no-build -c Release -- corpus evals/golden/golden.json artifacts/eval-report.json
+      - name: Publish smoke test (the image build uses the same command; dev settings must not be published)
+        run: |
+          dotnet publish src/Helio.Api -c Release -o artifacts/publish --no-build
+          test ! -f artifacts/publish/appsettings.Development.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports
+          path: artifacts/
+
+  container:
+    needs: build-test-evaluate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+      id-token: write # provenance attestation
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      # 1. Build locally (no push) so the scan gates the publish.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: helio:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Scan image; HIGH or CRITICAL fails the pipeline before anything is published
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: helio:${{ github.sha }}
+          format: sarif
+          output: trivy.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy.sarif
+      # 2. Only a clean image is pushed, immutable by commit SHA, with SBOM and provenance.
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        id: push
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha
+      - name: Image digest (pin deployments to this, not to a tag)
+        run: echo "ghcr.io/${{ github.repository }}@${{ steps.push.outputs.digest }}" | tee artifacts-digest.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-digest
+          path: artifacts-digest.txt
+
+  live-evaluation:
+    # Runs the same golden set against Azure OpenAI nightly, authenticating with OIDC federation (no stored key).
+    if: github.event_name == 'schedule' || (github.event_name == 'push' && vars.RUN_LIVE_EVAL == 'true')
+    needs: build-test-evaluate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      Ai__Provider: azure-openai
+      Ai__Endpoint: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - run: dotnet run --project evals/Helio.Evaluation -c Release -- corpus evals/golden/golden.json artifacts/eval-report-live.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: live-eval
+          path: artifacts/

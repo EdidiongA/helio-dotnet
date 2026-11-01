@@ -1,0 +1,187 @@
+# Kubernetes manifests for Helio.NET. Secrets are referenced, never embedded. Create them with:
+#   kubectl create secret generic helio-secrets \
+#     --from-literal=operatorKey=$(openssl rand -hex 24) --from-literal=readerKey=$(openssl rand -hex 24) \
+#     --from-literal=callerHashPepper=$(openssl rand -hex 24) \
+#     --from-literal=sqlConnection='Server=tcp:...;Database=helio;Authentication=Active Directory Default;Encrypt=True' \
+#     --from-literal=redis='....redis.cache.windows.net:6380,ssl=true,...'
+# Deploy by image digest (the CI workflow prints it) rather than by a mutable tag.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: helio-api
+  annotations:
+    # Azure Workload Identity: the user-assigned identity granted "Cognitive Services OpenAI User",
+    # "Search Index Data Contributor" and a contained SQL user. DefaultAzureCredential finds the projected token.
+    azure.workload.identity/client-id: "<user-assigned-identity-client-id>"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: helio-api
+  labels: { app: helio-api }
+spec:
+  replicas: 3
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels: { app: helio-api }
+  template:
+    metadata:
+      labels:
+        app: helio-api
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: helio-api
+      # Required for the projected workload-identity token; set to false if you switch to a key-based credential.
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1654
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: helio-api } }
+      containers:
+        - name: api
+          # Replace with the digest printed by the CI "push" step, e.g. ghcr.io/edidionga/helio-dotnet@sha256:...
+          image: ghcr.io/edidionga/helio-dotnet@sha256:REPLACE_WITH_RELEASE_DIGEST
+          imagePullPolicy: Always
+          ports: [{ containerPort: 8080, name: http }]
+          env:
+            - { name: ASPNETCORE_ENVIRONMENT, value: Production }
+            - { name: Storage__Database, value: sqlserver }
+            - { name: Storage__VectorStore, value: azure-ai-search }
+            - { name: Ai__Provider, value: azure-openai }
+            - { name: Ai__Endpoint, valueFrom: { configMapKeyRef: { name: helio-config, key: openaiEndpoint } } }
+            - { name: Storage__SearchEndpoint, valueFrom: { configMapKeyRef: { name: helio-config, key: searchEndpoint } } }
+            - { name: Storage__ConnectionString, valueFrom: { secretKeyRef: { name: helio-secrets, key: sqlConnection } } }
+            - { name: Storage__RedisConnectionString, valueFrom: { secretKeyRef: { name: helio-secrets, key: redis } } }
+            - { name: Security__OperatorApiKeys__0, valueFrom: { secretKeyRef: { name: helio-secrets, key: operatorKey } } }
+            - { name: Security__ReaderApiKeys__0, valueFrom: { secretKeyRef: { name: helio-secrets, key: readerKey } } }
+            - { name: Security__CallerHashPepper, valueFrom: { secretKeyRef: { name: helio-secrets, key: callerHashPepper } } }
+            - { name: Retention__QueryRecordRetention, value: "90.00:00:00" }
+            # nginx-ingress pod CIDR; X-Forwarded-For is trusted only from here (per-address rate limits depend on it).
+            - { name: Proxy__TrustedNetworks__0, value: "10.244.0.0/16" }
+            # Azure OpenAI and AI Search authenticate with workload identity when Ai__ApiKey and Storage__SearchApiKey are unset.
+          resources:
+            requests: { cpu: 250m, memory: 384Mi }
+            limits: { cpu: "1", memory: 768Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+          startupProbe:
+            httpGet: { path: /health/ready, port: http }
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet: { path: /health/ready, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 15
+          lifecycle:
+            preStop: { exec: { command: ["sleep", "5"] } }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: helio-api
+  labels: { app: helio-api }
+spec:
+  selector: { app: helio-api }
+  ports: [{ port: 80, targetPort: http, name: http }]
+---
+# Prometheus Operator scrape: /metrics requires the operator credential, which Prometheus presents as a bearer
+# token (the API accepts an API key in Authorization: Bearer). No unauthenticated metrics port exists.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: helio-api
+spec:
+  selector: { matchLabels: { app: helio-api } }
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      authorization:
+        type: Bearer
+        credentials: { name: helio-secrets, key: operatorKey }
+---
+# Default deny; allow ingress from the ingress controller and the monitoring namespace, egress to DNS and HTTPS only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: helio-api
+spec:
+  podSelector: { matchLabels: { app: helio-api } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress-nginx } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+      ports: [{ port: 8080, protocol: TCP }]
+  egress:
+    - to: [{ namespaceSelector: {}, podSelector: { matchLabels: { k8s-app: kube-dns } } }]
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+    - ports: [{ port: 443, protocol: TCP }, { port: 1433, protocol: TCP }, { port: 6380, protocol: TCP }]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: helio-api
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: helio-api }
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 65 } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: helio-api
+spec:
+  minAvailable: 2
+  selector: { matchLabels: { app: helio-api } }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: helio-api
+  annotations:
+    nginx.ingress.kubernetes.io/limit-rps: "50"
+    nginx.ingress.kubernetes.io/proxy-body-size: "4m"
+    # Operational paths stay inside the cluster: the public host exposes the console, the API and liveness only.
+    nginx.ingress.kubernetes.io/server-snippet: |
+      location ~ ^/(metrics|health/ready|openapi) { return 404; }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [helio.example.org]
+      secretName: helio-tls
+  rules:
+    - host: helio.example.org
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: helio-api, port: { number: 80 } } }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: helio-config
+data:
+  openaiEndpoint: https://your-openai.openai.azure.com/
+  searchEndpoint: https://your-search.search.windows.net

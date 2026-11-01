@@ -1,0 +1,12 @@
+bin/
+obj/
+data/
+*.db
+*.db-shm
+*.db-wal
+evals/report.json
+artifacts/
+.vs/
+.vscode/
+*.user
+TestResults/

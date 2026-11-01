@@ -1,0 +1,68 @@
+# Local production-like stack: API + Redis cache + SQL Server, one replica. Run:
+#   export HELIO_OPERATOR_KEY=$(openssl rand -hex 24) HELIO_READER_KEY=$(openssl rand -hex 24) \
+#          HELIO_CALLER_HASH_PEPPER=$(openssl rand -hex 24) MSSQL_SA_PASSWORD='Str0ng_Local_Pass!' REDIS_PASSWORD=$(openssl rand -hex 16)
+#   docker compose up --build
+# Every secret is required (no baked-in fallback), the API is bound to loopback, and the app runs as a
+# least-privilege SQL login created by the init job rather than as sa.
+services:
+  api:
+    build: .
+    ports: ["127.0.0.1:8080:8080"]
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      Storage__Database: sqlserver
+      Storage__ConnectionString: "Server=sqlserver;Database=helio;User Id=helio_app;Password=${HELIO_DB_PASSWORD:?set HELIO_DB_PASSWORD};TrustServerCertificate=true;Encrypt=true"
+      Storage__RedisConnectionString: "redis:6379,password=${REDIS_PASSWORD:?set REDIS_PASSWORD}"
+      # One replica only: the in-memory index is per process. Use azure-ai-search for anything larger.
+      Storage__AllowMemoryStoreWithRedis: "true"
+      Security__OperatorApiKeys__0: "${HELIO_OPERATOR_KEY:?set HELIO_OPERATOR_KEY (32+ random characters)}"
+      Security__ReaderApiKeys__0: "${HELIO_READER_KEY:?set HELIO_READER_KEY (32+ random characters)}"
+      Security__CallerHashPepper: "${HELIO_CALLER_HASH_PEPPER:?set HELIO_CALLER_HASH_PEPPER}"
+      Retention__QueryRecordRetention: "30.00:00:00"
+      # Switch to Azure OpenAI by setting these (and Storage__VectorStore=azure-ai-search for a shared index).
+      Ai__Provider: "${HELIO_AI_PROVIDER:-deterministic}"
+      Ai__AllowDeterministicInProduction: "${HELIO_ALLOW_DETERMINISTIC:-true}"
+      Ai__Endpoint: "${AZURE_OPENAI_ENDPOINT:-}"
+      Ai__ApiKey: "${AZURE_OPENAI_API_KEY:-}"
+    depends_on:
+      sqlserver-init: { condition: service_completed_successfully }
+      redis: { condition: service_started }
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    command: ["sh", "-c", "redis-server --requirepass \"$$REDIS_PASSWORD\" --maxmemory 128mb --maxmemory-policy allkeys-lru"]
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?set REDIS_PASSWORD}"
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD:?set MSSQL_SA_PASSWORD}"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    volumes: ["mssql-data:/var/opt/mssql"]
+  # Creates the database and a least-privilege login for the API, then exits. The schema itself is created
+  # by the API on first start (EnsureCreated); see docs/DECISIONS.md ADR-013 for the migration path.
+  sqlserver-init:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    depends_on:
+      sqlserver: { condition: service_healthy }
+    environment:
+      MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD:?set MSSQL_SA_PASSWORD}"
+      HELIO_DB_PASSWORD: "${HELIO_DB_PASSWORD:?set HELIO_DB_PASSWORD}"
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        /opt/mssql-tools18/bin/sqlcmd -S sqlserver -U sa -P "$$MSSQL_SA_PASSWORD" -C -Q "
+          IF DB_ID('helio') IS NULL CREATE DATABASE helio;
+          IF NOT EXISTS (SELECT 1 FROM sys.sql_logins WHERE name = 'helio_app') CREATE LOGIN helio_app WITH PASSWORD = '$$HELIO_DB_PASSWORD';"
+        /opt/mssql-tools18/bin/sqlcmd -S sqlserver -U sa -P "$$MSSQL_SA_PASSWORD" -C -d helio -Q "
+          IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'helio_app') CREATE USER helio_app FOR LOGIN helio_app;
+          ALTER ROLE db_ddladmin ADD MEMBER helio_app;
+          ALTER ROLE db_datareader ADD MEMBER helio_app;
+          ALTER ROLE db_datawriter ADD MEMBER helio_app;"
+volumes:
+  mssql-data:

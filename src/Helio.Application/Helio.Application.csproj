@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Helio.NET application layer: ingestion, retrieval-augmented answering, citation guard and evaluation use cases.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Helio.Domain/Helio.Domain.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.14" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.14" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Helio.UnitTests" />
+    <InternalsVisibleTo Include="Helio.IntegrationTests" />
+  </ItemGroup>
+</Project>

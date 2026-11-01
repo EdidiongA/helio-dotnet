@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Helio.NET domain model: documents, chunks, answers, evaluation records and the ports the application depends on.</Description>
+  </PropertyGroup>
+</Project>

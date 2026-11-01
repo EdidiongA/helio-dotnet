@@ -1,0 +1,45 @@
+# Prometheus alert rules on Helio's domain metrics, not only HTTP status codes. These are the numbers that
+# mean the product is misbehaving even when every request returns 200.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: helio-api
+spec:
+  groups:
+    - name: helio
+      rules:
+        - alert: HelioAbstentionRateHigh
+          expr: sum(rate(helio_abstentions_total[15m])) / sum(rate(helio_answers_total[15m])) > 0.4
+          for: 15m
+          labels: { severity: warning }
+          annotations: { summary: "More than 40% of questions are being abstained; check retrieval and the index." }
+        - alert: HelioSchemaViolations
+          expr: sum(rate(helio_abstentions_total{reason="schema_violation"}[10m])) > 0.05
+          for: 10m
+          labels: { severity: critical }
+          annotations: { summary: "The model is returning output that fails validation; check the deployment or prompt version." }
+        - alert: HelioLatencyP95High
+          expr: histogram_quantile(0.95, sum(rate(helio_ask_duration_milliseconds_bucket[5m])) by (le)) > 4000
+          for: 10m
+          labels: { severity: warning }
+          annotations: { summary: "p95 ask latency above 4 s." }
+        - alert: HelioSpendBudget
+          expr: increase(helio_cost_micro_usd_total[1h]) > 20000000
+          for: 0m
+          labels: { severity: warning }
+          annotations: { summary: "Model spend exceeded 20 USD in the last hour." }
+        - alert: HelioInjectionAttempts
+          expr: sum(rate(helio_abstentions_total{reason="citations_not_in_context"}[15m])) > 0.1
+          for: 15m
+          labels: { severity: warning }
+          annotations: { summary: "Answers are repeatedly citing passages that were not retrieved: a sign of prompt manipulation or a bad model deployment." }
+        - alert: HelioUpstreamTimeouts
+          expr: sum(rate(helio_abstentions_total{reason="upstream_timeout"}[10m])) > 0.05
+          for: 10m
+          labels: { severity: critical }
+          annotations: { summary: "Model or embedding calls are exceeding the generation deadline." }
+        - alert: HelioNotReady
+          expr: kube_deployment_status_replicas_available{deployment="helio-api"} < 2
+          for: 5m
+          labels: { severity: critical }
+          annotations: { summary: "Fewer than two Helio replicas are ready." }
