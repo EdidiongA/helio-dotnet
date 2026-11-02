@@ -19,7 +19,7 @@ jobs:
   build-test-evaluate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
@@ -55,7 +55,7 @@ jobs:
       security-events: write
       id-token: write # provenance attestation
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v3
       # 1. Build locally (no push) so the scan gates the publish.
       - uses: docker/build-push-action@v6
@@ -112,7 +112,7 @@ jobs:
       Ai__Provider: azure-openai
       Ai__Endpoint: ${{ vars.AZURE_OPENAI_ENDPOINT }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
