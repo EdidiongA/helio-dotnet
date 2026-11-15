@@ -2,7 +2,7 @@
 # Multi-stage build: the SDK image compiles; the runtime image is the chiseled, non-root ASP.NET image
 # (no shell, no package manager, minimal attack surface).
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0 AS build
 WORKDIR /src
 COPY Directory.Build.props Helio.slnx ./
 COPY src/Helio.Domain/Helio.Domain.csproj src/Helio.Domain/
